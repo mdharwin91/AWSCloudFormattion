@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: An AWS Serverless Application Model template describing your function.
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 128
+    Runtime: python3.13
+    Architectures:
+      - x86_64
+    EphemeralStorage:
+      Size: 512
+    PackageType: Zip
+    RuntimeManagementConfig:
+      UpdateRuntimeOn: Auto
+Resources:
+  CFinstanceautostop:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Description: ''
+      Handler: instanceAutoStop.lambda_handler
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 21600
+        MaximumRetryAttempts: 2
+      PackageType: Zip
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+                - ec2:DescribeVpcs
+                - ec2:DescribeSecurityGroups
+                - ec2:RevokeSecurityGroupIngress
+                - ec2:AuthorizeSecurityGroupIngress
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: '*'
+ 
+      RecursiveLoop: Terminate
+      SnapStart:
+        ApplyOn: None
+      Events:
+        Schedule1:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 10 ? 1-12 * *)
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+  CFipaddressupdate:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Description: ''
+      Handler: ipAddressAutoUpdate.lambda_handler
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 21600
+        MaximumRetryAttempts: 2
+      RecursiveLoop: Terminate
+      Role: arn:aws:iam::372364834333:role/CG_role
+      SnapStart:
+        ApplyOn: None
+      Events:
+        Api1:
+          Type: Api
+          Properties:
+            RestApiId: !Ref CFip_address_update
+            Path: /ip_address_update
+            Method: ANY
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+  CFec2Instancestartstop:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Description: ''
+      Handler: instanceStartStop.lambda_handler
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 21600
+        MaximumRetryAttempts: 2
+      RecursiveLoop: Terminate
+      Role: arn:aws:iam::372364834333:role/CG_role
+      SnapStart:
+        ApplyOn: None
+      Events:
+        Schedule1:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 5,9 ? 1,6,7,10 MON-FRI *)
+        Schedule2:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 5,6 ? 2,3,4,5,8,9,11,12 2-6 *)
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+  CFip_address_update:
+      Type: AWS::Serverless::Api
+      Properties:
+        Name: ipAddressUpdate
+        StageName: prod
+        EndpointConfiguration: REGIONAL
