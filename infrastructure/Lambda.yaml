@@ -135,7 +135,7 @@ Resources:
       Handler: instanceAutoStop.lambda_handler
       Role: !GetAtt InstanceAutoStopRole.Arn
       EventInvokeConfig:
-        MaximumEventAgeInSeconds: 21600
+        MaximumEventAgeInSeconds: 900
         MaximumRetryAttempts: 2
       Events:
         DailySchedule:
@@ -156,7 +156,7 @@ Resources:
       Handler: instanceStartStop.lambda_handler
       Role: !GetAtt EC2ManagementRole.Arn
       EventInvokeConfig:
-        MaximumEventAgeInSeconds: 21600
+        MaximumEventAgeInSeconds: 900
         MaximumRetryAttempts: 2
       Events:
         BusinessDaysStartSchedule:
@@ -183,7 +183,7 @@ Resources:
       Handler: ipAddressAutoUpdate.lambda_handler
       Role: !GetAtt EC2ManagementRole.Arn
       EventInvokeConfig:
-        MaximumEventAgeInSeconds: 21600
+        MaximumEventAgeInSeconds: 900
         MaximumRetryAttempts: 2
       Events:
         ApiEndpoint:
