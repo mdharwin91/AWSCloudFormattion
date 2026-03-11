@@ -1,6 +1,32 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: An AWS Serverless Application Model template describing your function.
+Description: CloudFormation template for EC2 auto-stop/start and IP address update Lambda functions
+
+Parameters:
+  InstanceId:
+    Type: String
+    Description: EC2 Instance ID to manage
+    Default: i-00e10d36eeb755184
+  
+  SecurityGroupId:
+    Type: String
+    Description: Security Group ID for IP address updates
+    Default: sg-04c3c8b63cff84110
+  
+  SNSTopicArn:
+    Type: String
+    Description: SNS Topic ARN for notifications
+    Default: arn:aws:sns:ap-south-1:372364834333:Email_Notification_For_Ec2
+  
+  EnvironmentTag:
+    Type: String
+    Description: Environment tag for resources
+    Default: Production
+    AllowedValues:
+      - Development
+      - Testing
+      - Production
+
 Globals:
   Function:
     Timeout: 60
@@ -13,93 +39,184 @@ Globals:
     PackageType: Zip
     RuntimeManagementConfig:
       UpdateRuntimeOn: Auto
+    Environment:
+      Variables:
+        INSTANCE_ID: !Ref InstanceId
+        SECURITY_GROUP_ID: !Ref SecurityGroupId
+        SNS_TOPIC_ARN: !Ref SNSTopicArn
+
 Resources:
-  CFinstanceautostop:
+  # API Gateway for IP Address Update
+  IpAddressUpdateApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: ipAddressUpdate
+      StageName: prod
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: true
+
+  # IAM Role for EC2 Auto Stop Function
+  InstanceAutoStopRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EC2AndSNSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:StopInstances
+                  - ec2:DescribeInstances
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref SNSTopicArn
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+
+  # IAM Role for EC2 Start/Stop and IP Update Functions
+  EC2ManagementRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EC2SecurityGroupManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:DescribeInstances
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:DescribeVpcs
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref SNSTopicArn
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+
+  # Lambda Function for Auto Stop
+  InstanceAutoStopFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub '${AWS::StackName}-auto-stop'
       CodeUri: .
-      Description: ''
+      Description: Automatically stops EC2 instance at scheduled time
       Handler: instanceAutoStop.lambda_handler
+      Role: !GetAtt InstanceAutoStopRole.Arn
       EventInvokeConfig:
         MaximumEventAgeInSeconds: 21600
         MaximumRetryAttempts: 2
-      PackageType: Zip
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ec2:DescribeInstances
-                - ec2:DescribeVpcs
-                - ec2:DescribeSecurityGroups
-                - ec2:RevokeSecurityGroupIngress
-                - ec2:AuthorizeSecurityGroupIngress
-              Resource: '*'
-            - Effect: Allow
-              Action:
-                - logs:CreateLogGroup
-                - logs:CreateLogStream
-                - logs:PutLogEvents
-              Resource: '*'
- 
-      RecursiveLoop: Terminate
-      SnapStart:
-        ApplyOn: None
       Events:
-        Schedule1:
+        DailySchedule:
           Type: Schedule
           Properties:
-            Schedule: cron(30 10 ? 1-12 * *)
-      RuntimeManagementConfig:
-        UpdateRuntimeOn: Auto
-  CFipaddressupdate:
+            Schedule: cron(30 10 ? * * *)
+      Tags:
+        Environment: !Ref EnvironmentTag
+        Function: AutoStop
+
+  # Lambda Function for Start/Stop
+  InstanceStartStopFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub '${AWS::StackName}-start-stop'
       CodeUri: .
-      Description: ''
-      Handler: ipAddressAutoUpdate.lambda_handler
+      Description: Starts or stops EC2 instance based on schedule
+      Handler: instanceStartStop.lambda_handler
+      Role: !GetAtt EC2ManagementRole.Arn
       EventInvokeConfig:
         MaximumEventAgeInSeconds: 21600
         MaximumRetryAttempts: 2
-      RecursiveLoop: Terminate
-      Role: arn:aws:iam::372364834333:role/CG_role
-      SnapStart:
-        ApplyOn: None
       Events:
-        Api1:
+        BusinessDaysStartSchedule:
+          Type: Schedule
+          Properties:
+            Description: Start instance on business days at 5:30 AM and 9:30 AM IST
+            Schedule: cron(0 0,4 ? 1,6,7,10 MON-FRI *)
+        WeekendStartSchedule:
+          Type: Schedule
+          Properties:
+            Description: Start instance on other months at 5:30 AM and 6:30 AM IST
+            Schedule: cron(0 0,1 ? 2,3,4,5,8,9,11,12 2-6 *)
+      Tags:
+        Environment: !Ref EnvironmentTag
+        Function: StartStop
+
+  # Lambda Function for IP Address Update
+  IpAddressUpdateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ip-update'
+      CodeUri: .
+      Description: Updates security group with latest client IP address
+      Handler: ipAddressAutoUpdate.lambda_handler
+      Role: !GetAtt EC2ManagementRole.Arn
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 21600
+        MaximumRetryAttempts: 2
+      Events:
+        ApiEndpoint:
           Type: Api
           Properties:
-            RestApiId: !Ref CFip_address_update
+            RestApiId: !Ref IpAddressUpdateApi
             Path: /ip_address_update
-            Method: ANY
-      RuntimeManagementConfig:
-        UpdateRuntimeOn: Auto
-  CFec2Instancestartstop:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: .
-      Description: ''
-      Handler: instanceStartStop.lambda_handler
-      EventInvokeConfig:
-        MaximumEventAgeInSeconds: 21600
-        MaximumRetryAttempts: 2
-      RecursiveLoop: Terminate
-      Role: arn:aws:iam::372364834333:role/CG_role
-      SnapStart:
-        ApplyOn: None
-      Events:
-        Schedule1:
-          Type: Schedule
-          Properties:
-            Schedule: cron(30 5,9 ? 1,6,7,10 MON-FRI *)
-        Schedule2:
-          Type: Schedule
-          Properties:
-            Schedule: cron(30 5,6 ? 2,3,4,5,8,9,11,12 2-6 *)
-      RuntimeManagementConfig:
-        UpdateRuntimeOn: Auto
-  CFip_address_update:
-      Type: AWS::Serverless::Api
-      Properties:
-        Name: ipAddressUpdate
-        StageName: prod
-        EndpointConfiguration: REGIONAL
+            Method: GET
+      Tags:
+        Environment: !Ref EnvironmentTag
+        Function: IpUpdate
+
+Outputs:
+  InstanceAutoStopFunctionArn:
+    Description: ARN of the Instance Auto Stop Lambda function
+    Value: !GetAtt InstanceAutoStopFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-auto-stop-arn'
+
+  InstanceStartStopFunctionArn:
+    Description: ARN of the Instance Start/Stop Lambda function
+    Value: !GetAtt InstanceStartStopFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-start-stop-arn'
+
+  IpAddressUpdateFunctionArn:
+    Description: ARN of the IP Address Update Lambda function
+    Value: !GetAtt IpAddressUpdateFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ip-update-arn'
+
+  IpAddressUpdateApiEndpoint:
+    Description: API Gateway endpoint for IP address updates
+    Value: !Sub 'https://${IpAddressUpdateApi}.execute-api.${AWS::Region}.amazonaws.com/prod/ip_address_update'
+    Export:
+      Name: !Sub '${AWS::StackName}-api-endpoint'
